@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Music Player
+Comment=An music player for the COSMIC™ desktop
+Type=Application
+Icon=io.github.bloomdevelop.music-player
+Exec=music-player %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=
