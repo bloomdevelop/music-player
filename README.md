@@ -4,22 +4,26 @@ An WIP music player for the COSMIC™ desktop
 
 ## TODO
 
-- [ ] Playlists
-- [ ] Album art
+- [ ] Album/Cover art
+- [ ] Playlists view
 - [ ] Album view
 - [ ] Artist view
+- [ ] Queue context view
 - [ ] Library view
-    - [ ] Song metadata list items
+    - [ ] Song metadata list items*
 - [ ] Search
 - [ ] Now playing view
-- [X] Song metadata
-- [X] MPRIS Support
-- [ ] Queue
-- [ ] Shuffle
-- [ ] Repeat
-- [ ] Volume
-- [ ] ReplayGain
-- [ ] Crossfade
+- [ ] Audio backend (GStreamer)
+    - [X] Song metadata
+    - [X] MPRIS Support
+    - [X] Queue
+    - [ ] Shuffle
+    - [ ] Repeat
+    - [ ] Volume
+    - [ ] ReplayGain
+    - [ ] Crossfade
+
+\* It requires creating an parser for some formats to be able to show something like song's title, artist, etc...
 
 ## Installation
 
