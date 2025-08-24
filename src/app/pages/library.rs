@@ -10,10 +10,7 @@ pub fn library_view(app: &AppModel) -> Element<'_, Message> {
     // Rows
     let mut rows = widget::column().spacing(4);
     for path in app.library_tracks().iter().take(200) {
-        let label = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let label = app.library_display_text(path);
 
         let play_btn = widget::button::icon(icon::from_name("media-playback-start-symbolic"))
             .on_press(Message::LoadPath(path.to_string_lossy().into_owned()));

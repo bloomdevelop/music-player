@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use gstreamer as gst;
 use gst::prelude::*;
 use std::path::Path;
@@ -8,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 // Backend focuses purely on GStreamer playback. MPRIS is handled by a separate module.
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TrackMetadata {
     pub title: Option<String>,
     pub album: Option<String>,

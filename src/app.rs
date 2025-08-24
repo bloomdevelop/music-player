@@ -10,9 +10,13 @@ use cosmic::prelude::*;
 use cosmic::widget::{self, icon, menu, nav_bar};
 use cosmic::{cosmic_theme, theme};
 use futures_util::SinkExt;
-use music_player::audio::backend::MediaPlayer;
+use music_player::audio::backend::{MediaPlayer, TrackMetadata};
 use music_player::audio::mpris::{self, MprisCommand, MprisEvent};
 use music_player::audio::queue::{scan_music_dir, Queue};
+use music_player::audio::metadata::parse_files_metadata;
+use directories::ProjectDirs;
+use serde_json;
+use std::fs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,6 +44,10 @@ pub struct AppModel {
     queue: Queue,
     /// Library tracks scanned from user's Music directory
     library_tracks: Vec<PathBuf>,
+    /// Parsed metadata cache for library items
+    library_meta: HashMap<PathBuf, TrackMetadata>,
+    /// Cached label for the footer's now playing text
+    now_playing_label: String,
     /// Current playback position in milliseconds
     position_ms: u64,
     /// Current track duration in milliseconds
@@ -69,6 +77,8 @@ pub enum Message {
     LoadPath(String),
     /// Library scan completed
     LibraryScanned(Vec<PathBuf>),
+    /// Library metadata parsed for a batch of files
+    LibraryMetadataParsed(Vec<(PathBuf, TrackMetadata)>),
     /// Add a path to the playback queue without starting playback
     Enqueue(String),
     Next,
@@ -154,6 +164,8 @@ impl cosmic::Application for AppModel {
             queue: Queue::new(),
             // Library will be populated asynchronously
             library_tracks: Vec::new(),
+            library_meta: HashMap::new(),
+            now_playing_label: String::from("No track"),
             position_ms: 0,
             duration_ms: 0,
             is_playing: false,
@@ -164,8 +176,19 @@ impl cosmic::Application for AppModel {
 
         // Initialize MPRIS manager
         let mpris = mpris::start(Self::APP_ID);
-        app.mpris_tx = Some(mpris.cmd_tx.clone());
+        app.mpris_tx = Some(mpris.cmd_tx);
         app.mpris_rx = Some(mpris.evt_rx);
+
+        // Load cached library metadata if available
+        if let Some(pd) = ProjectDirs::from("io.github", "bloomdevelop", "music-player") {
+            let cache_file = pd.cache_dir().join("library_meta.json");
+            if let Ok(bytes) = fs::read(&cache_file) {
+                if let Ok(map) = serde_json::from_slice::<HashMap<PathBuf, TrackMetadata>>(&bytes)
+                {
+                    app.library_meta = map;
+                }
+            }
+        }
 
         // Create a startup command that sets the window title.
         let command = app.update_title();
@@ -392,15 +415,21 @@ impl cosmic::Application for AppModel {
                     let p = Path::new(&path);
                     // Ensure queue knows about this selection so Next/Prev operate
                     self.queue.select_or_push(PathBuf::from(p));
+                    // Stop current playback to ensure a clean transition
+                    let _ = player.stop();
                     if let Err(err) = player.load_path(p) {
                         eprintln!("failed to load path {path}: {err}");
                     } else if let Err(err) = player.play() {
                         eprintln!("failed to start playback: {err}");
                     } else {
-                        // Defer metadata send until tags parsed by GStreamer bus
                         self.mpris_needs_metadata_flush = true;
 
                         self.is_playing = true;
+                        // Set a provisional label from filename until tags arrive
+                        self.now_playing_label = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| String::from("No track"));
                         if let Some(tx) = &self.mpris_tx {
                             if let Some(ap) = &self.audio {
                                 let _ = tx.try_send(MprisCommand::SetPlayback {
@@ -409,25 +438,25 @@ impl cosmic::Application for AppModel {
                                 });
                             }
                         }
-                    }
 
-                    if self.mpris_needs_metadata_flush {
-                        if let Some(tx) = &self.mpris_tx {
-                            // Read current metadata and duration
-                            if let Some(ap) = &self.audio {
-                                let md = ap.metadata();
-                                println!("mpris: metadata: {md:?}");
-                                let have_any =
-                                    md.title.is_some() || md.artist.is_some() || md.album.is_some();
-                                let len = ap.duration();
-                                if have_any || len.is_some() {
-                                    let _ = tx.try_send(MprisCommand::SetMetadata {
-                                        title: md.title,
-                                        artist: md.artist,
-                                        album: md.album,
-                                        length: len,
-                                    });
-                                    self.mpris_needs_metadata_flush = false;
+                        if self.mpris_needs_metadata_flush {
+                            if let Some(tx) = &self.mpris_tx {
+                                // Read current metadata and duration
+                                if let Some(ap) = &self.audio {
+                                    let md = ap.metadata();
+                                    println!("mpris: metadata: {md:?}");
+                                    let have_any =
+                                        md.title.is_some() || md.artist.is_some() || md.album.is_some();
+                                    let len = ap.duration();
+                                    if have_any || len.is_some() {
+                                        let _ = tx.try_send(MprisCommand::SetMetadata {
+                                            title: md.title,
+                                            artist: md.artist,
+                                            album: md.album,
+                                            length: len,
+                                        });
+                                        self.mpris_needs_metadata_flush = false;
+                                    }
                                 }
                             }
                         }
@@ -435,8 +464,29 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::LibraryScanned(tracks) => {
-                self.library_tracks = tracks;
+            Message::LibraryScanned(paths) => {
+                // Store paths
+                self.library_tracks = paths.clone();
+                // Spawn background metadata parsing
+                let parse_task = cosmic::task::future(async move {
+                    let results = parse_files_metadata(&paths);
+                    Message::LibraryMetadataParsed(results)
+                });
+                return Task::batch(vec![parse_task]);
+            }
+
+            Message::LibraryMetadataParsed(pairs) => {
+                for (p, md) in pairs {
+                    self.library_meta.insert(p, md);
+                }
+                // Save cache to disk
+                if let Some(pd) = ProjectDirs::from("io.github", "bloomdevelop", "music-player") {
+                    let _ = fs::create_dir_all(pd.cache_dir());
+                    let cache_file = pd.cache_dir().join("library_meta.json");
+                    if let Ok(bytes) = serde_json::to_vec(&self.library_meta) {
+                        let _ = fs::write(cache_file, bytes);
+                    }
+                }
             }
 
             Message::Enqueue(path) => {
@@ -446,6 +496,8 @@ impl cosmic::Application for AppModel {
             Message::Next => {
                 if let Some(next) = self.queue.next().cloned() {
                     if let Some(player) = &self.audio {
+                        // Stop current playback before loading the next track
+                        let _ = player.stop();
                         if let Err(err) = player.load_path(&next) {
                             eprintln!("failed to load next track: {err}");
                         } else if let Err(err) = player.play() {
@@ -454,6 +506,11 @@ impl cosmic::Application for AppModel {
                             self.is_playing = true;
                             // Defer metadata send until tags parsed by GStreamer bus
                             self.mpris_needs_metadata_flush = true;
+                            // Provisional label from filename
+                            self.now_playing_label = next
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| String::from("No track"));
                             if let Some(tx) = &self.mpris_tx {
                                 let _ = tx.try_send(MprisCommand::SetPlayback {
                                     playing: true,
@@ -468,6 +525,8 @@ impl cosmic::Application for AppModel {
             Message::Prev => {
                 if let Some(prev) = self.queue.prev().cloned() {
                     if let Some(player) = &self.audio {
+                        // Stop current playback before loading the previous track
+                        let _ = player.stop();
                         if let Err(err) = player.load_path(&prev) {
                             eprintln!("failed to load prev track: {err}");
                         } else if let Err(err) = player.play() {
@@ -476,6 +535,11 @@ impl cosmic::Application for AppModel {
                             self.is_playing = true;
                             // Defer metadata send until tags parsed by GStreamer bus
                             self.mpris_needs_metadata_flush = true;
+                            // Provisional label from filename
+                            self.now_playing_label = prev
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| String::from("No track"));
                             if let Some(tx) = &self.mpris_tx {
                                 let _ = tx.try_send(MprisCommand::SetPlayback {
                                     playing: true,
@@ -525,42 +589,40 @@ impl cosmic::Application for AppModel {
                         });
                     }
 
-                    // Drain incoming MPRIS events and act on them
-                    if let Some(rx) = &mut self.mpris_rx {
-                        while let Ok(evt) = rx.try_recv() {
-                            match evt {
-                                MprisEvent::Play => {
-                                    // Inline behavior of Message::Play
-                                    if let Some(track) = self.queue.current() {
-                                        let _ = player.load_path(track);
-                                    }
-                                    let _ = player.play();
-                                    self.is_playing = true;
-                                }
-                                MprisEvent::Pause => {
-                                    let _ = player.pause();
-                                    self.is_playing = false;
-                                }
-                                MprisEvent::Next => {
-                                    if let Some(next) = self.queue.next().cloned() {
-                                        let _ = player.load_path(&next);
-                                        let _ = player.play();
-                                        self.is_playing = true;
-                                    }
-                                }
-                                MprisEvent::Previous => {
-                                    if let Some(prev) = self.queue.prev().cloned() {
-                                        let _ = player.load_path(&prev);
-                                        let _ = player.play();
-                                        self.is_playing = true;
-                                    }
-                                }
-                                MprisEvent::SeekTo(d) => {
-                                    let _ = player.seek(d);
-                                    self.position_ms = d.as_millis() as u64;
-                                }
+                    // If a new track was loaded and we were waiting for tags, push metadata now
+                    if self.mpris_needs_metadata_flush {
+                        if let Some(tx) = &self.mpris_tx {
+                            // Read current metadata and duration
+                            let md = player.metadata();
+                            let have_any =
+                                md.title.is_some() || md.artist.is_some() || md.album.is_some();
+                            let len = player.duration();
+                            if have_any || len.is_some() {
+                                let _ = tx.try_send(MprisCommand::SetMetadata {
+                                    title: md.title.clone(),
+                                    artist: md.artist.clone(),
+                                    album: md.album.clone(),
+                                    length: len,
+                                });
+                                self.mpris_needs_metadata_flush = false;
                             }
                         }
+                    }
+
+                    // Update the footer label from current metadata (or filename fallback)
+                    let md = player.metadata();
+                    let new_label = match (md.title, md.artist) {
+                        (Some(title), Some(artist)) => format!("{title} — {artist}"),
+                        (Some(title), None) => title,
+                        (None, Some(artist)) => artist,
+                        (None, None) => self
+                            .queue
+                            .current()
+                            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                            .unwrap_or_else(|| String::from("No track")),
+                    };
+                    if new_label != self.now_playing_label {
+                        self.now_playing_label = new_label;
                     }
                 }
             }
@@ -630,25 +692,8 @@ impl cosmic::Application for AppModel {
             .tooltip(fl!("tooltip-next-button"))
             .on_press(Message::Next);
 
-        // Build a label for the current song: prefer metadata, else filename, else placeholder
-        let song_label = if let Some(player) = &self.audio {
-            let md = player.metadata();
-            match (md.title, md.artist) {
-                (Some(title), Some(artist)) => format!("{title} — {artist}"),
-                (Some(title), None) => title,
-                (None, Some(artist)) => artist,
-                (None, None) => self
-                    .queue
-                    .current()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| String::from("No track")),
-            }
-        } else {
-            self.queue
-                .current()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| String::from("No track"))
-        };
+        // Use cached now playing label (updated on Tick when tags arrive)
+        let song_label = self.now_playing_label.clone();
 
         let footer_controls = widget::row()
             .align_y(Vertical::Center)
@@ -672,7 +717,7 @@ impl cosmic::Application for AppModel {
             .padding([8, 12])
             .class(cosmic::theme::Container::Card),
         )
-        .padding([7, 4])
+        .padding([7, 2])
         .width(Length::Fill);
 
         widget::column()
@@ -742,6 +787,33 @@ impl AppModel {
         &self.library_tracks
     }
 
+    /// Build a display label for a library item using metadata when available.
+    pub fn library_display_text(&self, path: &Path) -> String {
+        if let Some(md) = self.library_meta.get(path) {
+            let title = md
+                .title
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let artist = md
+                .artist
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+
+            if let Some(t) = title {
+                if let Some(a) = artist {
+                    return format!("{} — {}", t, a);
+                }
+                return t;
+            }
+        }
+
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    }
+
     /// The queue context page showing the current playback queue.
     /// TODO)) Add fallback when the queue are empty
     pub fn queue_context_view(&self) -> Element<'static, Message> {
@@ -750,17 +822,33 @@ impl AppModel {
         let mut items = widget::column().spacing(4);
         let current = self.queue.current().cloned();
         for path in self.queue.tracks() {
-            let label = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            let label = self.library_display_text(path);
 
             let is_current = current.as_ref().map(|p| p == path).unwrap_or(false);
             // Tint current track instead of using a play indicator
 
-            let row = widget::row()
+            let mut row = widget::row()
                 .spacing(8)
-                .align_y(Vertical::Center)
+                .align_y(Vertical::Center);
+
+            if is_current {
+                // Left accent bar using system accent color, with fixed height
+                let accent = theme::active().cosmic().accent.base;
+                let accent_color: cosmic::iced::Color = accent.into();
+                let accent_bar = widget::container(
+                    widget::Space::with_width(Length::Fixed(4.0)).height(Length::Fixed(24.0)),
+                )
+                .width(Length::Fixed(4.0))
+                .height(Length::Fixed(24.0))
+                .style(move |_| {
+                    let mut s = cosmic::iced::widget::container::Style::default();
+                    s.background = Some(cosmic::iced::Background::Color(accent_color));
+                    s
+                });
+                row = row.push(accent_bar);
+            }
+
+            row = row
                 .push(
                     widget::button::icon(icon::from_name("media-playback-start-symbolic"))
                         .on_press(Message::LoadPath(path.to_string_lossy().into_owned())),
@@ -768,11 +856,7 @@ impl AppModel {
                 .push(widget::text(label.clone()))
                 .width(Length::Fill);
 
-            let mut container = widget::container(row).padding([4, 8]);
-
-            if is_current {
-                container = container.class(cosmic::theme::Container::Primary);
-            }
+            let container = widget::container(row).padding([4, 8]);
 
             items = items.push(container);
         }
