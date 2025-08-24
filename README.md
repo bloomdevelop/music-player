@@ -9,8 +9,8 @@ A WIP music player for the COSMIC™ desktop
 - [ ] Album view
 - [ ] Artist view
 - [ ] Queue context view
-- [ ] Library view
-    - [ ] Song metadata list items*
+- [X] Library view
+    - [X] Song metadata list items*
 - [ ] Search
 - [ ] Now playing view
 - [ ] Audio backend (GStreamer)
