@@ -8,11 +8,12 @@ An WIP music player for the COSMIC™ desktop
 - [ ] Album art
 - [ ] Album view
 - [ ] Artist view
-- [X] Library view
+- [ ] Library view
+    - [ ] Song metadata list items
 - [ ] Search
 - [ ] Now playing view
 - [X] Song metadata
-- [ ] MPRIS Support
+- [X] MPRIS Support
 - [ ] Queue
 - [ ] Shuffle
 - [ ] Repeat

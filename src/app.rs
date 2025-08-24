@@ -307,6 +307,9 @@ impl cosmic::Application for AppModel {
 
             // Playback messages
             Message::Play => {
+                // Forces MPRIS to flush metadata if it's not already done (this is a workaround for now)
+                self.mpris_needs_metadata_flush = true;
+
                 if let Some(player) = &self.audio {
                     // If there's a current queue track and nothing loaded, load it.
                     if let Some(track) = self.queue.current() {
@@ -333,7 +336,9 @@ impl cosmic::Application for AppModel {
                             // Read current metadata and duration
                             if let Some(ap) = &self.audio {
                                 let md = ap.metadata();
-                                let have_any = md.title.is_some() || md.artist.is_some() || md.album.is_some();
+                                println!("mpris: metadata: {md:?}");
+                                let have_any =
+                                    md.title.is_some() || md.artist.is_some() || md.album.is_some();
                                 let len = ap.duration();
                                 if have_any || len.is_some() {
                                     let _ = tx.try_send(MprisCommand::SetMetadata {
@@ -392,15 +397,38 @@ impl cosmic::Application for AppModel {
                     } else if let Err(err) = player.play() {
                         eprintln!("failed to start playback: {err}");
                     } else {
-                        self.is_playing = true;
                         // Defer metadata send until tags parsed by GStreamer bus
                         self.mpris_needs_metadata_flush = true;
+
+                        self.is_playing = true;
                         if let Some(tx) = &self.mpris_tx {
                             if let Some(ap) = &self.audio {
                                 let _ = tx.try_send(MprisCommand::SetPlayback {
                                     playing: true,
                                     position: ap.position(),
                                 });
+                            }
+                        }
+                    }
+
+                    if self.mpris_needs_metadata_flush {
+                        if let Some(tx) = &self.mpris_tx {
+                            // Read current metadata and duration
+                            if let Some(ap) = &self.audio {
+                                let md = ap.metadata();
+                                println!("mpris: metadata: {md:?}");
+                                let have_any =
+                                    md.title.is_some() || md.artist.is_some() || md.album.is_some();
+                                let len = ap.duration();
+                                if have_any || len.is_some() {
+                                    let _ = tx.try_send(MprisCommand::SetMetadata {
+                                        title: md.title,
+                                        artist: md.artist,
+                                        album: md.album,
+                                        length: len,
+                                    });
+                                    self.mpris_needs_metadata_flush = false;
+                                }
                             }
                         }
                     }
@@ -595,9 +623,11 @@ impl cosmic::Application for AppModel {
         };
 
         let prev_btn = widget::button::icon(icon::from_name("media-skip-backward-symbolic"))
+            .tooltip(fl!("tooltip-prev-button"))
             .on_press(Message::Prev);
 
         let next_btn = widget::button::icon(icon::from_name("media-skip-forward-symbolic"))
+            .tooltip(fl!("tooltip-next-button"))
             .on_press(Message::Next);
 
         // Build a label for the current song: prefer metadata, else filename, else placeholder
@@ -614,8 +644,7 @@ impl cosmic::Application for AppModel {
                     .unwrap_or_else(|| String::from("No track")),
             }
         } else {
-            self
-                .queue
+            self.queue
                 .current()
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                 .unwrap_or_else(|| String::from("No track"))
@@ -633,13 +662,17 @@ impl cosmic::Application for AppModel {
             .width(Length::Fill);
 
         let footer = widget::container(
-            widget::column()
-                .spacing(6)
-                .push(widget::text(song_label).width(Length::Fill))
-                .push(footer_controls)
-                .width(Length::Fill),
+            widget::container(
+                widget::column()
+                    .spacing(6)
+                    .push(widget::text(song_label).width(Length::Fill))
+                    .push(footer_controls)
+                    .width(Length::Fill),
+            )
+            .padding([8, 12])
+            .class(cosmic::theme::Container::Card),
         )
-        .padding([8, 12])
+        .padding([7, 4])
         .width(Length::Fill);
 
         widget::column()
@@ -710,6 +743,7 @@ impl AppModel {
     }
 
     /// The queue context page showing the current playback queue.
+    /// TODO)) Add fallback when the queue are empty
     pub fn queue_context_view(&self) -> Element<'static, Message> {
         use cosmic::iced::Length;
 
@@ -731,22 +765,21 @@ impl AppModel {
                     widget::button::icon(icon::from_name("media-playback-start-symbolic"))
                         .on_press(Message::LoadPath(path.to_string_lossy().into_owned())),
                 )
-                .push({
-                    let txt = widget::text(label.clone());
-                    if is_current {
-                        txt.class(cosmic::theme::Text::Accent)
-                    } else {
-                        txt
-                    }
-                })
+                .push(widget::text(label.clone()))
                 .width(Length::Fill);
 
-            items = items.push(widget::container(row).padding([4, 8]));
+            let mut container = widget::container(row).padding([4, 8]);
+
+            if is_current {
+                container = container.class(cosmic::theme::Container::Primary);
+            }
+
+            items = items.push(container);
         }
 
         widget::column()
             .spacing(12)
-            .push(widget::scrollable(items).height(Length::Fill))
+            .push(widget::scrollable(items))
             .width(Length::Fill)
             .into()
     }

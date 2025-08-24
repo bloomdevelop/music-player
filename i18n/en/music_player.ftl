@@ -1,7 +1,6 @@
 app-title = Music Player
 about = About
 view = View
-welcome = Welcome to COSMIC! ✨
 nav-library-label = Library
 nav-now-playing-label = Now Playing
 git-description = Git commit {$hash} on {$date}

@@ -106,6 +106,7 @@ pub fn start(app_id: &str) -> MprisHandle {
                             let _ = player.seeked(Time::from_millis(pos.as_millis() as i64)).await;
                         }
                     }
+                    
                     MprisCommand::SetMetadata {
                         title,
                         artist,

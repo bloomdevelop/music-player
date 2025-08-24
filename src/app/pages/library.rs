@@ -7,14 +7,8 @@ use cosmic::iced::alignment::{Horizontal, Vertical};
 use super::super::{AppModel, Message};
 
 pub fn library_view(app: &AppModel) -> Element<'_, Message> {
-    // Header row
-    let header = widget::row()
-        .push(widget::text::title3("Title").width(Length::Fill))
-        .push(widget::text("").width(Length::Shrink))
-        .width(Length::Fill);
-
     // Rows
-    let mut rows = widget::column().spacing(4).push(header);
+    let mut rows = widget::column().spacing(4);
     for path in app.library_tracks().iter().take(200) {
         let label = path
             .file_name()
