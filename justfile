@@ -60,7 +60,7 @@ run *args:
 
 # Run the application for testing purposes
 run-debug *args:
-    env RUST_BACKTRACE=full cargo run -- --debug {{args}}
+    env RUST_BACKTRACE=full cargo run {{args}}
 
 # Installs files
 install:
