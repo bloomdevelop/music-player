@@ -1,6 +1,24 @@
 # Music Player
 
-An music player for the COSMIC™ desktop
+An WIP music player for the COSMIC™ desktop
+
+## TODO
+
+- [ ] Playlists
+- [ ] Album art
+- [ ] Album view
+- [ ] Artist view
+- [X] Library view
+- [ ] Search
+- [ ] Now playing view
+- [X] Song metadata
+- [ ] MPRIS Support
+- [ ] Queue
+- [ ] Shuffle
+- [ ] Repeat
+- [ ] Volume
+- [ ] ReplayGain
+- [ ] Crossfade
 
 ## Installation
 
