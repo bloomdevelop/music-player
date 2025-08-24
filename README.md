@@ -1,6 +1,6 @@
 # Music Player
 
-An WIP music player for the COSMIC™ desktop
+A WIP music player for the COSMIC™ desktop
 
 ## TODO
 
@@ -10,6 +10,10 @@ An WIP music player for the COSMIC™ desktop
 - [ ] Artist view
 - [ ] Queue context view
 - [ ] Library view
+- [ ] Album view
+- [ ] Artist view
+- [ ] Library view
+    - [ ] Song metadata list items*
     - [ ] Song metadata list items*
 - [ ] Search
 - [ ] Now playing view
